@@ -1,65 +1,146 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useCallback, useRef, useEffect } from "react";
+import dynamic from "next/dynamic";
+import DropZone from "@/components/DropZone";
+import TranscriptPanel from "@/components/TranscriptPanel";
+import AudioPlayer from "@/components/AudioPlayer";
+
+// Load Scene client-only (Three.js requires browser APIs)
+const Scene = dynamic(() => import("@/components/Scene"), { ssr: false });
+
+export type AppState = "idle" | "uploading" | "generating" | "synthesizing" | "ready";
 
 export default function Home() {
+  const [appState, setAppState] = useState<AppState>("idle");
+  const [scriptText, setScriptText] = useState("");
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+    };
+  }, []);
+
+  const handleFile = useCallback(async (file: File) => {
+    const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB
+    if (file.size > MAX_FILE_SIZE) {
+      setError("File too large. Please upload a file under 20 MB.");
+      return;
+    }
+
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+
+    setError(null);
+    setScriptText("");
+    setAudioUrl(null);
+    setAnalyser(null);
+    setAppState("uploading");
+
+    try {
+      // 1. Upload + stream script generation
+      setAppState("generating");
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const scriptRes = await fetch("/api/generate-script", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!scriptRes.ok) throw new Error(`Script generation failed: ${scriptRes.statusText}`);
+      if (!scriptRes.body) throw new Error("No response body");
+
+      const reader = scriptRes.body.getReader();
+      const decoder = new TextDecoder();
+      let fullScript = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        fullScript += chunk;
+        setScriptText(fullScript);
+      }
+
+      // 2. Synthesize audio
+      setAppState("synthesizing");
+      const audioRes = await fetch("/api/synthesize-audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ script: fullScript }),
+      });
+
+      if (!audioRes.ok) throw new Error(`Audio synthesis failed: ${audioRes.statusText}`);
+
+      const blob = await audioRes.blob();
+      const url = URL.createObjectURL(blob);
+      audioUrlRef.current = url;
+      setAudioUrl(url);
+      setAppState("ready");
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : "Something went wrong");
+      setAppState("idle");
+    }
+  }, []);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <div className="relative w-full h-full overflow-hidden">
+      {/* 3D background */}
+      <Scene appState={appState} analyser={analyser} />
+
+      {/* Title */}
+      {appState === "idle" && (
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-10 text-center pointer-events-none">
+          <h1 className="text-white/90 text-2xl font-semibold tracking-widest uppercase">
+            Study Podcast
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="text-white/30 text-sm mt-1">
+            Upload a study guide. Get a podcast.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      )}
+
+      {/* Status badge during processing */}
+      {(appState === "uploading" || appState === "generating" || appState === "synthesizing") && (
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-10">
+          <div className="flex items-center gap-2 rounded-full bg-black/60 backdrop-blur border border-white/10 px-4 py-2">
+            <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+            <span className="text-white/70 text-sm">
+              {appState === "uploading" && "Reading file…"}
+              {appState === "generating" && "Writing your podcast script…"}
+              {appState === "synthesizing" && "Synthesizing audio…"}
+            </span>
+          </div>
         </div>
-      </main>
+      )}
+
+      {/* Error banner */}
+      {error && (
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-10 max-w-md w-full px-4">
+          <div className="rounded-xl bg-red-900/70 backdrop-blur border border-red-500/30 px-4 py-3 text-red-200 text-sm text-center">
+            {error}
+          </div>
+        </div>
+      )}
+
+      {/* Overlay for drag-and-drop / idle prompt */}
+      <DropZone onFile={handleFile} appState={appState} />
+
+      {/* Transcript panel */}
+      <TranscriptPanel scriptText={scriptText} appState={appState} />
+
+      {/* Audio player */}
+      {appState === "ready" && audioUrl && (
+        <AudioPlayer audioUrl={audioUrl} onAnalyser={setAnalyser} />
+      )}
     </div>
   );
 }
